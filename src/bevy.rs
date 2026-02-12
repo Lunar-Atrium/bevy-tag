@@ -55,13 +55,11 @@ use crate::{
 /// App::new()
 ///     .add_plugins(
 ///         NamespacePlugin::from_definitions(Tags::DEFINITIONS)
-///             .allow_dynamic_registration(true)
 ///     )
 /// ```
 #[derive(Default)]
 pub struct NamespacePlugin {
     definitions: Option<&'static [NamespaceDef]>,
-    allow_dynamic: bool,
 }
 
 impl NamespacePlugin {
@@ -82,19 +80,7 @@ impl NamespacePlugin {
     pub fn from_definitions(definitions: &'static [NamespaceDef]) -> Self {
         Self {
             definitions: Some(definitions),
-            allow_dynamic: false,
         }
-    }
-
-    /// Enable or disable dynamic tag registration at runtime.
-    ///
-    /// When enabled, systems can call `registry.register("New.Path")` to add tags
-    /// that weren't defined at compile time.
-    ///
-    /// Default: `false`
-    pub fn allow_dynamic_registration(mut self, allow: bool) -> Self {
-        self.allow_dynamic = allow;
-        self
     }
 }
 
@@ -107,19 +93,7 @@ impl Plugin for NamespacePlugin {
         };
 
         app.insert_resource(registry);
-
-        // Store config for runtime checks
-        app.insert_resource(NamespaceConfig {
-            allow_dynamic: self.allow_dynamic,
-        });
     }
-}
-
-/// Runtime configuration for the namespace system.
-#[derive(Resource)]
-pub struct NamespaceConfig {
-    /// Whether dynamic registration is allowed.
-    pub allow_dynamic: bool,
 }
 
 // =============================================================================

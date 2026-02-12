@@ -195,7 +195,7 @@ impl NamespaceRegistry {
     /// # Errors
     ///
     /// - Returns error if path is empty
-    /// - Returns error if path depth exceeds MAX_DEPTH (16)
+    /// - Returns error if path depth exceeds MAX_DEPTH (8)
     /// - Returns error if path already exists (no-op, returns existing GID via Ok)
     pub fn register(&mut self, path: &str) -> Result<GID, String> {
         if path.is_empty() {
@@ -251,6 +251,7 @@ impl NamespaceRegistry {
             ));
         }
 
+        // FIXME: after dynmaic register, it is not guarantee the dfs order
         let idx = self.entries.len();
         self.entries.push(NamespaceEntry {
             gid,
