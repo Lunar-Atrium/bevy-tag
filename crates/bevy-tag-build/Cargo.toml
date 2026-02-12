@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Build-time utilities for bevy-tag: TOML parsing, lock file management, and code generation"
 keywords = ["bevy", "gamedev", "tags", "build", "codegen"]
 categories = ["development-tools::build-utils", "game-development"]

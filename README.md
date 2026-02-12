@@ -119,7 +119,7 @@ let custom_gid = registry.register("Combat.Special.Fireball").unwrap();
 let movement_tags = registry.descendants_of(Tags::Movement::GID);
 ```
 
-## UE5-style Redirects
+## Redirects
 
 When renaming tags, use redirects to preserve serialized GIDs:
 

@@ -4,9 +4,9 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = []
+authors = ["Shaopeng-Luan"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/user/bevy-tag"
+repository = "https://github.com/Shaopeng-Luan/bevy-tag"
 
 [workspace.dependencies]
 bevy-tag-macro = { path = "crates/bevy-tag-macro" }
