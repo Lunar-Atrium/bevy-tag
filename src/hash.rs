@@ -70,18 +70,6 @@ pub const fn hierarchical_gid(segments: &[&[u8]]) -> u128 {
     encode_gid(payload, depth)
 }
 
-/// Legacy function signature for compatibility.
-///
-/// The widths and offsets parameters are ignored; the fixed static layout is used.
-#[inline]
-pub const fn hierarchical_gid_with_layout(
-    segments: &[&[u8]],
-    _widths: &[u8],
-    _offsets: &[u8],
-) -> u128 {
-    hierarchical_gid(segments)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -34,13 +34,12 @@ pub trait NamespaceTag: Copy + 'static {
     /// Stable hierarchical GID, computed at compile time.
     ///
     /// This is a `const` value — no registry lookup needed.
-    const STABLE_GID: GID;
+    const GID: GID;
 
-    /// Get the GID. This is just `Self::STABLE_GID` but useful
-    /// when you have a value (not just the type).
+    /// Get the GID as a value (convenience method).
     #[inline]
     fn gid() -> GID {
-        Self::STABLE_GID
+        Self::GID
     }
 }
 
@@ -63,7 +62,7 @@ impl IntoGid for GID {
 impl<T: NamespaceTag> IntoGid for T {
     #[inline]
     fn into_gid(self) -> GID {
-        T::STABLE_GID
+        T::GID
     }
 }
 
@@ -89,7 +88,7 @@ impl<T: NamespaceTag> IntoGidWithRegistry for T {
     #[inline]
     fn into_gid_with(self, _registry: &NamespaceRegistry) -> GID {
         // Tag already knows its GID at compile time
-        T::STABLE_GID
+        T::GID
     }
 }
 

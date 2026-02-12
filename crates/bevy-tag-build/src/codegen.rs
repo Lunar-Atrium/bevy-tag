@@ -13,6 +13,13 @@ struct DeprecationInfo {
     alias_of: Option<String>,
 }
 
+/// Redirect info for code generation.
+#[derive(Debug, Clone)]
+struct RedirectInfo {
+    /// Target path to redirect to
+    target: String,
+}
+
 /// Generate Rust code that invokes the `namespace!` macro.
 ///
 /// Output looks like:
@@ -35,8 +42,13 @@ struct DeprecationInfo {
 /// }
 /// ```
 pub fn generate_namespace_code(config: &TagsConfig) -> String {
-    // No deprecated entries when generating from config only
-    generate_namespace_code_internal(config, &HashMap::new())
+    // Build redirect map from config
+    let redirect_map: HashMap<&str, RedirectInfo> = config
+        .redirects()
+        .map(|r| (r.from.as_str(), RedirectInfo { target: r.to.clone() }))
+        .collect();
+
+    generate_namespace_code_internal(config, &HashMap::new(), &redirect_map)
 }
 
 /// Generate Rust code from lock file (includes deprecated entries).
@@ -56,13 +68,20 @@ pub fn generate_namespace_code_from_lock(config: &TagsConfig, lock: &LockFile) -
         })
         .collect();
 
-    generate_namespace_code_internal(config, &deprecation_map)
+    // Build redirect map from config
+    let redirect_map: HashMap<&str, RedirectInfo> = config
+        .redirects()
+        .map(|r| (r.from.as_str(), RedirectInfo { target: r.to.clone() }))
+        .collect();
+
+    generate_namespace_code_internal(config, &deprecation_map, &redirect_map)
 }
 
-/// Generate code with optional deprecated markers.
+/// Generate code with optional deprecated markers and redirects.
 fn generate_namespace_code_internal(
     config: &TagsConfig,
     deprecation_map: &HashMap<&str, DeprecationInfo>,
+    redirect_map: &HashMap<&str, RedirectInfo>,
 ) -> String {
     let mut output = String::new();
 
@@ -81,12 +100,18 @@ fn generate_namespace_code_internal(
         insert_path(&mut tree, &segments);
     }
 
+    // Also add redirect source paths to tree
+    for path in redirect_map.keys() {
+        let segments: Vec<&str> = path.split('.').collect();
+        insert_path(&mut tree, &segments);
+    }
+
     // Generate namespace! macro call
     output.push_str("namespace! {\n");
     output.push_str(&format!("    pub mod {} {{\n", config.module_name));
 
     // Generate tree recursively
-    generate_tree_code(&tree, "", 2, deprecation_map, &mut output);
+    generate_tree_code(&tree, "", 2, deprecation_map, redirect_map, &mut output);
 
     output.push_str("    }\n");
     output.push_str("}\n");
@@ -101,7 +126,7 @@ fn generate_namespace_code_internal(
 
     if !aliases.is_empty() {
         output.push_str("\n// ══════════════════════════════════════════════════════════════════════════════\n");
-        output.push_str("// Type aliases for deprecated paths (pointing to their replacement)\n");
+        output.push_str("// Redirects for renamed paths (UE5-style redirectors)\n");
         output.push_str("// ══════════════════════════════════════════════════════════════════════════════\n\n");
 
         for (old_path, new_path) in aliases {
@@ -109,11 +134,11 @@ fn generate_namespace_code_internal(
             let new_rust_path = path_to_rust_path(new_path, &config.module_name);
 
             output.push_str(&format!(
-                "#[deprecated(note = \"use {} instead\")]\n",
+                "#[deprecated(note = \"redirected to {}\")]\n",
                 new_rust_path
             ));
             output.push_str(&format!(
-                "pub type {} = bevy_tag::Alias<{}>;\n\n",
+                "pub type {} = bevy_tag::Redirect<{}>;\n\n",
                 old_rust_path.replace("::", "_"),  // Flatten for top-level type alias
                 new_rust_path
             ));
@@ -207,6 +232,7 @@ fn generate_tree_code(
     current_path: &str,
     indent: usize,
     deprecation_map: &HashMap<&str, DeprecationInfo>,
+    redirect_map: &HashMap<&str, RedirectInfo>,
     output: &mut String,
 ) {
     // Sort children for deterministic output
@@ -220,6 +246,17 @@ fn generate_tree_code(
         } else {
             format!("{}.{}", current_path, name)
         };
+
+        // Check if this path is a redirect
+        if let Some(redirect_info) = redirect_map.get(full_path.as_str()) {
+            // Generate #[redirect = "target"] attribute
+            output.push_str(&format!(
+                "{}#[redirect = \"{}\"]\n",
+                indent_str, redirect_info.target
+            ));
+            output.push_str(&format!("{}{};\n", indent_str, name));
+            continue;
+        }
 
         // Check if this path is deprecated
         let is_deprecated = deprecation_map.get(full_path.as_str())
@@ -251,7 +288,7 @@ fn generate_tree_code(
         } else {
             // Branch node
             output.push_str(&format!("{}{} {{\n", indent_str, name));
-            generate_tree_code(child, &full_path, indent + 1, deprecation_map, output);
+            generate_tree_code(child, &full_path, indent + 1, deprecation_map, redirect_map, output);
             output.push_str(&format!("{}}}\n", indent_str));
         }
     }
@@ -339,7 +376,7 @@ paths = ["A"]
         deprecation_map.insert("A.C", DeprecationInfo { deprecated: true, alias_of: None });
         deprecation_map.insert("X.Y", DeprecationInfo { deprecated: true, alias_of: None });
 
-        let code = generate_namespace_code_internal(&config, &deprecation_map);
+        let code = generate_namespace_code_internal(&config, &deprecation_map, &HashMap::new());
 
         println!("{}", code);
 
@@ -359,7 +396,7 @@ paths = ["A"]
         let mut deprecation_map = HashMap::new();
         deprecation_map.insert("X", DeprecationInfo { deprecated: true, alias_of: None });
 
-        let code = generate_namespace_code_internal(&config, &deprecation_map);
+        let code = generate_namespace_code_internal(&config, &deprecation_map, &HashMap::new());
 
         // Check the deprecated attribute format uses Rust native syntax
         assert!(code.contains("#[deprecated(note = "));
@@ -374,16 +411,35 @@ paths = ["A"]
             alias_of: Some("New.Path".to_string()),
         });
 
-        let code = generate_namespace_code_internal(&config, &deprecation_map);
+        let code = generate_namespace_code_internal(&config, &deprecation_map, &HashMap::new());
 
         println!("{}", code);
 
         // Should have deprecated attribute with alias info
         assert!(code.contains("Use 'New.Path' instead"));
 
-        // Should generate type alias section
-        assert!(code.contains("Type aliases for deprecated paths"));
-        assert!(code.contains("bevy_tag::Alias<"));
+        // Should generate redirect section
+        assert!(code.contains("Redirects for renamed paths"));
+        assert!(code.contains("bevy_tag::Redirect<"));
+    }
+
+    #[test]
+    fn generate_with_config_redirects() {
+        let toml = r#"
+[tags]
+paths = ["Equipment.Weapon.Blade"]
+
+[redirects]
+"Legacy.OldSword" = "Equipment.Weapon.Blade"
+"#;
+        let config = TagsConfig::from_str(toml).unwrap();
+        let code = generate_namespace_code(&config);
+
+        println!("{}", code);
+
+        // Should contain the redirect attribute
+        assert!(code.contains("#[redirect = \"Equipment.Weapon.Blade\"]"));
+        assert!(code.contains("OldSword;"));
     }
 
     #[test]

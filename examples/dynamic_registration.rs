@@ -5,7 +5,7 @@
 //! - Mix static (macro) and dynamic tags
 //! - Auto-create parent nodes when registering nested paths
 
-use bevy_tag::{depth_of, NamespaceRegistry};
+use bevy_tag::{NamespaceRegistry, depth_of, gid_is_descendant_of};
 use bevy_tag_macro::namespace;
 
 // Static tags defined at compile time
@@ -71,25 +71,25 @@ fn main() {
     }
     println!();
 
-    // 5. Descendant checks work across static/dynamic
+    // 5. Descendant checks work across static/dynamic (no registry needed!)
     println!("Descendant checks:");
-    let item = StaticTags::Item;
-    let weapon = StaticTags::item::Weapon;
+    let item = StaticTags::Item::GID;
+    let weapon = StaticTags::item::Weapon::GID;
 
     println!(
         "  Is Longsword under Item.Weapon? {}",
-        registry.is_descendant_of(longsword, weapon)
+        gid_is_descendant_of(longsword, weapon)
     );
     println!(
         "  Is Longsword under Item? {}",
-        registry.is_descendant_of(longsword, item)
+        gid_is_descendant_of(longsword, item)
     );
 
-    let skill = registry.gid_of("Skill").unwrap(); // TODO: new helper function directly using &str
-    println!(
-        "  Is Longsword under Skill? {}",
-        registry.is_descendant_of(longsword, skill)
-    );
+    // String-based lookup when you only have path strings
+    let is_under_skill = registry
+        .is_descendant_of_path("Item.Weapon.Sword.Longsword", "Skill")
+        .unwrap_or(false);
+    println!("  Is Longsword under Skill? {}", is_under_skill);
     println!();
 
     // 6. GID stability - same path always produces same GID

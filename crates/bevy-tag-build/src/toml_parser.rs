@@ -23,6 +23,8 @@ pub struct TagsConfig {
     pub on_remove: OnRemove,
     /// All tag entries (including auto-generated parents)
     entries: Vec<TagEntry>,
+    /// Redirect declarations (old_path -> new_path)
+    redirects: Vec<RedirectEntry>,
 }
 
 /// A single tag entry with computed properties.
@@ -36,6 +38,15 @@ pub struct TagEntry {
     pub parent: Option<String>,
 }
 
+/// A redirect entry mapping an old path to a new canonical path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedirectEntry {
+    /// The old/deprecated path (e.g., "Legacy.OldSword")
+    pub from: String,
+    /// The new canonical path (e.g., "Equipment.Weapon.Blade")
+    pub to: String,
+}
+
 /// Raw TOML structure.
 #[derive(Debug, Deserialize)]
 struct RawTagsConfig {
@@ -45,6 +56,9 @@ struct RawTagsConfig {
     on_remove: Option<String>,
     /// Tag definitions
     tags: RawTags,
+    /// Redirect declarations: { "OldPath" = "NewPath" }
+    #[serde(default)]
+    redirects: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,10 +98,32 @@ impl TagsConfig {
         // Validate and expand paths
         let entries = Self::expand_paths(&raw.tags.paths)?;
 
+        // Parse and validate redirects
+        let mut redirects = Vec::new();
+        for (from, to) in raw.redirects {
+            // Validate paths
+            Self::validate_path(&from)?;
+            Self::validate_path(&to)?;
+
+            // Check that target exists in entries
+            if !entries.iter().any(|e| e.path == to) {
+                return Err(TagsConfigError::Validation(format!(
+                    "Redirect target '{}' not found in [tags].paths",
+                    to
+                )));
+            }
+
+            redirects.push(RedirectEntry { from, to });
+        }
+
+        // Sort redirects for deterministic output
+        redirects.sort_by(|a, b| a.from.cmp(&b.from));
+
         Ok(Self {
             module_name,
             on_remove,
             entries,
+            redirects,
         })
     }
 
@@ -104,6 +140,58 @@ impl TagsConfig {
     /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Get all redirect entries.
+    pub fn redirects(&self) -> impl Iterator<Item = &RedirectEntry> {
+        self.redirects.iter()
+    }
+
+    /// Validate a single path string.
+    fn validate_path(path: &str) -> Result<(), TagsConfigError> {
+        if path.is_empty() {
+            return Err(TagsConfigError::Validation("Empty path not allowed".into()));
+        }
+        if path.starts_with('.') || path.ends_with('.') {
+            return Err(TagsConfigError::Validation(format!(
+                "Invalid path '{}': cannot start or end with '.'",
+                path
+            )));
+        }
+        if path.contains("..") {
+            return Err(TagsConfigError::Validation(format!(
+                "Invalid path '{}': contains '..'",
+                path
+            )));
+        }
+
+        for seg in path.split('.') {
+            if seg.is_empty() {
+                return Err(TagsConfigError::Validation(format!(
+                    "Invalid path '{}': empty segment",
+                    path
+                )));
+            }
+            let mut chars = seg.chars();
+            if let Some(first) = chars.next() {
+                if !first.is_alphabetic() && first != '_' {
+                    return Err(TagsConfigError::Validation(format!(
+                        "Invalid path '{}': segment '{}' must start with letter or underscore",
+                        path, seg
+                    )));
+                }
+            }
+            for c in chars {
+                if !c.is_alphanumeric() && c != '_' {
+                    return Err(TagsConfigError::Validation(format!(
+                        "Invalid path '{}': segment '{}' contains invalid character '{}'",
+                        path, seg, c
+                    )));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Expand paths to include all parent nodes.
@@ -381,5 +469,65 @@ paths = ["A"]
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn parse_redirects() {
+        let toml = r#"
+[tags]
+paths = ["Equipment.Weapon.Blade", "Equipment.Weapon.Bow"]
+
+[redirects]
+"Legacy.OldSword" = "Equipment.Weapon.Blade"
+"Legacy.OldBow" = "Equipment.Weapon.Bow"
+"#;
+        let config = TagsConfig::from_str(toml).unwrap();
+
+        let redirects: Vec<_> = config.redirects().collect();
+        assert_eq!(redirects.len(), 2);
+
+        // Sorted by from path
+        assert_eq!(redirects[0].from, "Legacy.OldBow");
+        assert_eq!(redirects[0].to, "Equipment.Weapon.Bow");
+        assert_eq!(redirects[1].from, "Legacy.OldSword");
+        assert_eq!(redirects[1].to, "Equipment.Weapon.Blade");
+    }
+
+    #[test]
+    fn redirects_target_must_exist() {
+        let toml = r#"
+[tags]
+paths = ["A.B"]
+
+[redirects]
+"Old.Path" = "Nonexistent.Target"
+"#;
+        let result = TagsConfig::from_str(toml);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn redirects_validates_paths() {
+        let toml = r#"
+[tags]
+paths = ["A.B"]
+
+[redirects]
+".Invalid" = "A.B"
+"#;
+        let result = TagsConfig::from_str(toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_redirects_allowed() {
+        let toml = r#"
+[tags]
+paths = ["A"]
+"#;
+        let config = TagsConfig::from_str(toml).unwrap();
+        assert_eq!(config.redirects().count(), 0);
     }
 }

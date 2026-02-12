@@ -10,8 +10,8 @@ use proc_macro_crate::{crate_name, FoundCrate};
 // Constants - must match bevy-tag's layout.rs
 // =============================================================================
 
-/// Maximum supported tree depth.
-const MAX_DEPTH: usize = 16;
+/// Maximum supported tree depth (0-7, encoded in 3 bits).
+const MAX_DEPTH: usize = 8;
 
 // =============================================================================
 // Parsing
@@ -33,12 +33,21 @@ struct DeprecationAttr {
     note: Option<String>,
 }
 
-struct Node {
-    name: Ident,
+/// Parsed attributes for a node.
+#[derive(Clone, Default)]
+struct NodeAttrs {
     /// User-defined metadata attributes (#[key = value])
-    attrs: Vec<MetaAttr>,
+    meta: Vec<MetaAttr>,
     /// Deprecation attribute (#[deprecated] or #[deprecated(note = "...")])
     deprecation: DeprecationAttr,
+    /// Redirect target path (#[redirect = "Path.To.Target"])
+    redirect_to: Option<String>,
+}
+
+struct Node {
+    name: Ident,
+    /// All parsed attributes
+    attrs: NodeAttrs,
     /// Optional: Node<DataType>
     data_type: Option<Type>,
     children: Vec<Node>,
@@ -66,7 +75,7 @@ fn parse_nodes(input: ParseStream) -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
     while !input.is_empty() {
         // Parse attributes
-        let (attrs, deprecation) = parse_all_attrs(input)?;
+        let attrs = parse_all_attrs(input)?;
 
         // Parse node name
         let name: Ident = input.parse()?;
@@ -89,7 +98,6 @@ fn parse_nodes(input: ParseStream) -> Result<Vec<Node>> {
             nodes.push(Node {
                 name,
                 attrs,
-                deprecation,
                 data_type,
                 children,
             });
@@ -98,7 +106,6 @@ fn parse_nodes(input: ParseStream) -> Result<Vec<Node>> {
             nodes.push(Node {
                 name,
                 attrs,
-                deprecation,
                 data_type,
                 children: Vec::new(),
             });
@@ -107,10 +114,14 @@ fn parse_nodes(input: ParseStream) -> Result<Vec<Node>> {
     Ok(nodes)
 }
 
-/// Parse all attributes, separating #[deprecated(...)] from #[key = value]
-fn parse_all_attrs(input: ParseStream) -> Result<(Vec<MetaAttr>, DeprecationAttr)> {
-    let mut attrs = Vec::new();
-    let mut deprecation = DeprecationAttr::default();
+/// Parse all attributes into NodeAttrs.
+///
+/// Handles:
+/// - `#[deprecated]` or `#[deprecated(note = "...")]`
+/// - `#[redirect = "Path.To.Target"]`
+/// - `#[key = value]` (metadata)
+fn parse_all_attrs(input: ParseStream) -> Result<NodeAttrs> {
+    let mut result = NodeAttrs::default();
 
     while input.peek(Token![#]) {
         input.parse::<Token![#]>()?;
@@ -120,7 +131,7 @@ fn parse_all_attrs(input: ParseStream) -> Result<(Vec<MetaAttr>, DeprecationAttr
         let key: Ident = content.parse()?;
 
         if key == "deprecated" {
-            deprecation.is_deprecated = true;
+            result.deprecation.is_deprecated = true;
 
             // Check for (note = "...")
             if content.peek(syn::token::Paren) {
@@ -133,19 +144,24 @@ fn parse_all_attrs(input: ParseStream) -> Result<(Vec<MetaAttr>, DeprecationAttr
                     if note_key == "note" {
                         inner.parse::<Token![=]>()?;
                         let note_value: syn::LitStr = inner.parse()?;
-                        deprecation.note = Some(note_value.value());
+                        result.deprecation.note = Some(note_value.value());
                     }
                 }
             }
+        } else if key == "redirect" {
+            // #[redirect = "Path.To.Target"]
+            content.parse::<Token![=]>()?;
+            let target: syn::LitStr = content.parse()?;
+            result.redirect_to = Some(target.value());
         } else {
             // Regular metadata attribute: #[key = value]
             content.parse::<Token![=]>()?;
             let value: Expr = content.parse()?;
-            attrs.push(MetaAttr { key, value });
+            result.meta.push(MetaAttr { key, value });
         }
     }
 
-    Ok((attrs, deprecation))
+    Ok(result)
 }
 
 // =============================================================================
@@ -161,8 +177,14 @@ struct FlatNode {
 }
 
 /// Flatten the parsed tree into a list with depth/path info.
+/// Skips redirect nodes (they don't have their own GID).
 fn flatten_nodes(nodes: &[Node], prefix: &str, depth: u8, out: &mut Vec<FlatNode>) {
     for node in nodes {
+        // Skip redirect nodes - they use target's GID
+        if node.attrs.redirect_to.is_some() {
+            continue;
+        }
+
         let path = if prefix.is_empty() {
             node.name.to_string()
         } else {
@@ -256,7 +278,7 @@ fn generate_tag_impl(
         impl #ns_crate::NamespaceTag for #node_ident {
             const PATH: &'static str = #path_lit;
             const DEPTH: u8 = #depth_lit;
-            const STABLE_GID: #ns_crate::GID = #node_ident::GID;
+            const GID: #ns_crate::GID = #node_ident::GID;
         }
     }
 }
@@ -322,6 +344,26 @@ fn to_snake_case(s: &str) -> String {
 /// Tags::movement::Idle::GID   // Child's GID
 /// Tags::Simple                // Leaf at root
 /// ```
+/// Convert a dot-separated path to a Rust type path relative to the module root.
+///
+/// Example: "Equipment.Weapon.Blade" -> equipment::weapon::Blade
+fn path_to_rust_type_path(path: &str) -> TokenStream2 {
+    let segments: Vec<&str> = path.split('.').collect();
+    if segments.len() == 1 {
+        // Root level: just the type name
+        let ident = Ident::new(segments[0], Span::call_site());
+        quote! { #ident }
+    } else {
+        // Nested: snake_case modules + CamelCase type
+        let modules: Vec<Ident> = segments[..segments.len() - 1]
+            .iter()
+            .map(|s| Ident::new(&to_snake_case(s), Span::call_site()))
+            .collect();
+        let type_name = Ident::new(segments.last().unwrap(), Span::call_site());
+        quote! { #(#modules::)* #type_name }
+    }
+}
+
 fn generate_tags_recursive(
     nodes: &[Node],
     prefix: &str,
@@ -344,6 +386,50 @@ fn generate_tags_recursive(
         } else {
             format!("{}.{}", prefix, node.name)
         };
+
+        // Generate deprecation attribute if present
+        let deprecation_attr = if node.attrs.deprecation.is_deprecated {
+            if let Some(ref note) = node.attrs.deprecation.note {
+                let note_lit = syn::LitStr::new(note, Span::call_site());
+                quote! { #[deprecated(note = #note_lit)] }
+            } else {
+                quote! { #[deprecated] }
+            }
+        } else {
+            quote! {}
+        };
+
+        // Check if this node is a redirect
+        if let Some(ref target_path) = node.attrs.redirect_to {
+            // Generate type alias: pub type OldName = Redirect<target::path::Type>;
+            let target_type = path_to_rust_type_path(target_path);
+
+            // Add deprecation note about redirect if not already deprecated
+            let redirect_deprecation = if node.attrs.deprecation.is_deprecated {
+                deprecation_attr.clone()
+            } else {
+                let note = format!("redirected to {}", target_path);
+                let note_lit = syn::LitStr::new(&note, Span::call_site());
+                quote! { #[deprecated(note = #note_lit)] }
+            };
+
+            output.push(quote! {
+                #redirect_deprecation
+                pub type #node_ident = #ns_crate::Redirect<#target_type>;
+            });
+
+            // Redirects cannot have children
+            if !node.children.is_empty() {
+                panic!(
+                    "Node '{}' has #[redirect] but also has children. Redirects must be leaf nodes.",
+                    path
+                );
+            }
+
+            continue;
+        }
+
+        // Regular node generation (not a redirect)
         let path_lit = syn::LitStr::new(&path, Span::call_site());
 
         // Build segments as byte string literals for const fn call
@@ -357,19 +443,7 @@ fn generate_tags_recursive(
         let depth_lit = depth;
 
         // Generate metadata constants from attributes
-        let metadata = generate_metadata_consts(&node.attrs);
-
-        // Generate deprecation attribute if present
-        let deprecation_attr = if node.deprecation.is_deprecated {
-            if let Some(ref note) = node.deprecation.note {
-                let note_lit = syn::LitStr::new(note, Span::call_site());
-                quote! { #[deprecated(note = #note_lit)] }
-            } else {
-                quote! { #[deprecated] }
-            }
-        } else {
-            quote! {}
-        };
+        let metadata = generate_metadata_consts(&node.attrs.meta);
 
         // Generate data type association if present
         let data_type_def = if let Some(ref ty) = node.data_type {
@@ -411,13 +485,16 @@ fn generate_tags_recursive(
                 .iter()
                 .map(|child| {
                     let child_ident = &child.name;
-                    let child_deprecation = if child.deprecation.is_deprecated {
-                        if let Some(ref note) = child.deprecation.note {
+                    let child_deprecation = if child.attrs.deprecation.is_deprecated {
+                        if let Some(ref note) = child.attrs.deprecation.note {
                             let note_lit = syn::LitStr::new(note, Span::call_site());
                             quote! { #[deprecated(note = #note_lit)] }
                         } else {
                             quote! { #[deprecated] }
                         }
+                    } else if child.attrs.redirect_to.is_some() {
+                        // Redirects are implicitly deprecated
+                        quote! { #[deprecated] }
                     } else {
                         quote! {}
                     };
@@ -507,6 +584,7 @@ fn infer_type_from_expr(expr: &Expr) -> TokenStream2 {
 }
 
 /// Generate `NamespaceDef` entries.
+/// Skips redirect nodes (they don't have their own definition).
 fn collect_defs(
     nodes: &[Node],
     prefix: &str,
@@ -515,6 +593,11 @@ fn collect_defs(
     out: &mut Vec<TokenStream2>,
 ) {
     for node in nodes {
+        // Skip redirect nodes - they point to another definition
+        if node.attrs.redirect_to.is_some() {
+            continue;
+        }
+
         let path = if prefix.is_empty() {
             node.name.to_string()
         } else {
@@ -541,51 +624,53 @@ fn collect_defs(
     }
 }
 
-/// Generate compile-time collision detection.
+/// Generate compile-time collision detection with detailed error messages.
 fn generate_collision_check(flat: &[FlatNode], ns_crate: &TokenStream2) -> TokenStream2 {
-    let n = flat.len();
+    // Generate individual collision checks for each pair with specific error messages
+    let mut checks = Vec::new();
 
-    let gid_computations: Vec<TokenStream2> = flat
-        .iter()
-        .map(|node| {
-            let seg_count = node.segments.len();
-            let seg_lits: Vec<syn::LitByteStr> = node
+    for i in 0..flat.len() {
+        for j in (i + 1)..flat.len() {
+            let path_i = flat[i].segments.join(".");
+            let path_j = flat[j].segments.join(".");
+
+            let seg_count_i = flat[i].segments.len();
+            let seg_lits_i: Vec<syn::LitByteStr> = flat[i]
                 .segments
                 .iter()
                 .map(|s| syn::LitByteStr::new(s.as_bytes(), Span::call_site()))
                 .collect();
 
-            quote! {
-                {
-                    const SEGS: [&[u8]; #seg_count] = [#(#seg_lits),*];
-                    #ns_crate::hierarchical_gid(&SEGS)
-                }
-            }
-        })
-        .collect();
+            let seg_count_j = flat[j].segments.len();
+            let seg_lits_j: Vec<syn::LitByteStr> = flat[j]
+                .segments
+                .iter()
+                .map(|s| syn::LitByteStr::new(s.as_bytes(), Span::call_site()))
+                .collect();
+
+            let error_msg = format!(
+                "GID collision detected: '{}' and '{}' hash to the same value",
+                path_i, path_j
+            );
+
+            checks.push(quote! {
+                const _: () = {
+                    const GID_A: #ns_crate::GID = {
+                        const SEGS: [&[u8]; #seg_count_i] = [#(#seg_lits_i),*];
+                        #ns_crate::hierarchical_gid(&SEGS)
+                    };
+                    const GID_B: #ns_crate::GID = {
+                        const SEGS: [&[u8]; #seg_count_j] = [#(#seg_lits_j),*];
+                        #ns_crate::hierarchical_gid(&SEGS)
+                    };
+                    assert!(GID_A != GID_B, #error_msg);
+                };
+            });
+        }
+    }
 
     quote! {
-        const _: () = {
-            const GIDS: [#ns_crate::GID; #n] = [
-                #(#gid_computations),*
-            ];
-
-            const fn check_collisions(gids: &[u128], count: usize) {
-                let mut i = 0;
-                while i < count {
-                    let mut j = i + 1;
-                    while j < count {
-                        if gids[i] == gids[j] {
-                            panic!("namespace GID collision detected!");
-                        }
-                        j += 1;
-                    }
-                    i += 1;
-                }
-            }
-
-            check_collisions(&GIDS, #n);
-        };
+        #(#checks)*
     }
 }
 

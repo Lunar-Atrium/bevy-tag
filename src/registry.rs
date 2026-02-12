@@ -139,10 +139,6 @@ impl NamespaceRegistry {
         })
     }
 
-    // =========================================================================
-    // Lookups
-    // =========================================================================
-
     /// Path → GID
     #[inline]
     pub fn gid_of(&self, path: &str) -> Option<GID> {
@@ -188,10 +184,6 @@ impl NamespaceRegistry {
     pub fn entries(&self) -> &[NamespaceEntry] {
         &self.entries
     }
-
-    // =========================================================================
-    // Dynamic registration
-    // =========================================================================
 
     /// Register a new tag at runtime.
     ///
@@ -291,11 +283,7 @@ impl NamespaceRegistry {
         self.gid_to_idx.contains_key(&gid.into_gid())
     }
 
-    // =========================================================================
-    // Metadata — zerocopy storage
-    // =========================================================================
-
-    /// Set typed metadata for a GID (zero-copy).
+    /// Set typed metadata for a GID.
     ///
     /// The type must implement `zerocopy::IntoBytes + Immutable`.
     /// Use `#[derive(IntoBytes, Immutable)]` on your type.
@@ -315,7 +303,7 @@ impl NamespaceRegistry {
             .insert(key.into(), value.as_bytes().to_vec())
     }
 
-    /// Get typed metadata for a GID (zero-copy).
+    /// Get typed metadata for a GID.
     ///
     /// The type must implement `zerocopy::FromBytes + Immutable`.
     /// Use `#[derive(FromBytes, Immutable)]` on your type.
@@ -398,25 +386,29 @@ impl NamespaceRegistry {
             .map(|m| m.iter().map(|(k, v)| (k.as_str(), v.as_slice())))
     }
 
-    // =========================================================================
-    // Subtree operations — O(1)
-    // =========================================================================
-
-    /// Is `candidate` a descendant of (or equal to) `ancestor`?
+    /// Check if `candidate` path is a descendant of (or equal to) `ancestor` path.
     ///
-    /// This is the core O(1) operation: extracts depth from ancestor GID,
-    /// then performs a single mask comparison.
+    /// Returns `None` if either path is not found in the registry.
     ///
-    /// Note: This method is now a thin wrapper over the standalone `is_descendant_of`
-    /// function, which can be used without a registry since depth is embedded in the GID.
-    ///
-    /// Accepts both raw `GID` and `Tag` types (anything implementing `IntoGid`).
+    /// For GID-based checks without registry lookup, use `is_descendant_of` directly.
     ///
     /// ```text
-    /// registry.is_descendant_of(Movement::Idle::Tag, Movement::Tag)
-    /// → true
+    /// registry.is_descendant_of_path("Movement.Idle", "Movement") → Some(true)
+    /// registry.is_descendant_of_path("Combat.Attack", "Movement") → Some(false)
+    /// registry.is_descendant_of_path("Unknown", "Movement") → None
     /// ```
-    #[inline]
+    pub fn is_descendant_of_path(&self, candidate: &str, ancestor: &str) -> Option<bool> {
+        let candidate_gid = self.gid_of(candidate)?;
+        let ancestor_gid = self.gid_of(ancestor)?;
+        Some(gid_is_descendant_of(candidate_gid, ancestor_gid))
+    }
+
+    /// Check if `candidate` path is a descendant of (or equal to) `ancestor`.
+    ///
+    /// ```text
+    /// registry.is_descendant_of_path(movement::Idle, Movement) → true
+    /// registry.is_descendant_of_path(combat::Attack, Movement) → false
+    /// ```
     pub fn is_descendant_of(&self, candidate: impl IntoGid, ancestor: impl IntoGid) -> bool {
         gid_is_descendant_of(candidate.into_gid(), ancestor.into_gid())
     }
@@ -653,17 +645,22 @@ mod tests {
         let attack = reg.gid_of("Combat.Attack").unwrap();
 
         // Movement.Idle is under Movement
-        assert!(reg.is_descendant_of(idle, movement));
-        assert!(reg.is_descendant_of(running, movement));
+        assert!(gid_is_descendant_of(idle, movement));
+        assert!(gid_is_descendant_of(running, movement));
 
         // Combat.Attack is NOT under Movement
-        assert!(!reg.is_descendant_of(attack, movement));
+        assert!(!gid_is_descendant_of(attack, movement));
 
         // Combat.Attack IS under Combat
-        assert!(reg.is_descendant_of(attack, combat));
+        assert!(gid_is_descendant_of(attack, combat));
 
         // A node is its own descendant
-        assert!(reg.is_descendant_of(movement, movement));
+        assert!(gid_is_descendant_of(movement, movement));
+
+        // String-based convenience function
+        assert_eq!(reg.is_descendant_of_path("Movement.Idle", "Movement"), Some(true));
+        assert_eq!(reg.is_descendant_of_path("Combat.Attack", "Movement"), Some(false));
+        assert_eq!(reg.is_descendant_of_path("Unknown", "Movement"), None);
     }
 
     #[test]
@@ -740,15 +737,15 @@ mod tests {
         let abcd = reg.gid_of("A.B.C.D").unwrap();
 
         // Every deeper node is descendant of every shallower ancestor
-        assert!(reg.is_descendant_of(abcd, abc));
-        assert!(reg.is_descendant_of(abcd, ab));
-        assert!(reg.is_descendant_of(abcd, a));
-        assert!(reg.is_descendant_of(abc, ab));
-        assert!(reg.is_descendant_of(abc, a));
-        assert!(reg.is_descendant_of(ab, a));
+        assert!(gid_is_descendant_of(abcd, abc));
+        assert!(gid_is_descendant_of(abcd, ab));
+        assert!(gid_is_descendant_of(abcd, a));
+        assert!(gid_is_descendant_of(abc, ab));
+        assert!(gid_is_descendant_of(abc, a));
+        assert!(gid_is_descendant_of(ab, a));
 
         // Not the other way
-        assert!(!reg.is_descendant_of(a, ab));
+        assert!(!gid_is_descendant_of(a, ab));
 
         // Depths are correct (use standalone function)
         use crate::layout::depth_of;
@@ -804,7 +801,7 @@ mod tests {
         // Verify descendant relationships
         let root = reg.gid_of("L0").unwrap();
         let leaf = reg.gid_of("L0.L1.L2.L3.L4.L5.L6.L7").unwrap();
-        assert!(reg.is_descendant_of(leaf, root));
+        assert!(gid_is_descendant_of(leaf, root));
     }
 
     // =========================================================================
@@ -843,7 +840,7 @@ mod tests {
 
         // Descendant check should work
         let combat = reg.gid_of("Combat").unwrap();
-        assert!(reg.is_descendant_of(gid, combat));
+        assert!(gid_is_descendant_of(gid, combat));
     }
 
     #[test]
@@ -925,7 +922,7 @@ mod tests {
         // Descendant checks work across static/dynamic
         let movement = reg.gid_of("Movement").unwrap();
         let running = reg.gid_of("Movement.Running").unwrap();
-        assert!(reg.is_descendant_of(running, movement));
+        assert!(gid_is_descendant_of(running, movement));
     }
 
     #[test]

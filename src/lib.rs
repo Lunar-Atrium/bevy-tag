@@ -16,31 +16,53 @@
 //!
 //! ## Self-Contained Operations
 //!
-//! Because depth is embedded in the GID, subtree checks are completely self-contained:
+//! Because depth is embedded in the GID, subtree checks are completely self-contained if you cannot acces registery:
 //!
 //! ```ignore
-//! use bevy_tag::{is_descendant_of, depth_of};
+//! use bevy_tag::{gid_is_descendant_of, depth_of};
 //!
 //! // No registry needed!
-//! if is_descendant_of(entity_tag, Movement::Tag::GID) {
+//! if gid_is_descendant_of(entity_tag, Movement::GID) {
 //!     // entity is under Movement subtree
 //! }
 //!
 //! let depth = depth_of(tag); // Extract depth directly from GID
 //! ```
+//!
+//! ## Quick Start
+//!
+//! ```ignore
+//! use bevy_tag::*;
+//! use bevy_tag_macro::namespace;
+//!
+//! namespace! {
+//!     pub mod Tags {
+//!         Movement { Idle; Running; }
+//!         Combat { Attack; Block; }
+//!     }
+//! }
+//!
+//! // Compile-time GID access
+//! let gid = Tags::movement::Idle::GID;
+//!
+//! // O(1) subtree check
+//! assert!(gid_is_descendant_of(gid, Tags::Movement::GID));
+//! let registry = NamespaceRegistry::build(Tags::DEFINITIONS).unwrap();
+//! assert!(is_descendant_of(registery, gid, Tags::Movement));
+//!
+//! // Runtime registry for path ↔ GID lookup
+//! let registry = NamespaceRegistry::build(Tags::DEFINITIONS).unwrap();
+//! assert_eq!(registry.path_of(gid), Some("Movement.Idle"));
+//! ```
 
-pub mod hash;
-pub mod layout;
-pub mod registry;
-pub mod traits;
+pub(crate) mod hash;
+pub(crate) mod layout;
+mod registry;
+mod traits;
 
-pub use hash::{fnv1a_64, hierarchical_gid, segment_hash};
-pub use layout::{
-    depth_of, encode_gid, gid_is_descendant_of, is_sibling, parent_of, DEPTH_BITS, DEPTH_MASK,
-    DEPTH_SHIFT, LEVEL_MASKS, LEVEL_OFFSETS, LEVEL_WIDTHS, MAX_DEPTH,
-};
-pub use registry::{NamespaceDef, NamespaceEntry, NamespaceRegistry};
-pub use traits::{Alias, HasData, IntoGid, IntoGids, NamespaceTag};
+// =============================================================================
+// Core Types
+// =============================================================================
 
 /// Global Identifier — a stable, hierarchical hash packed into u128.
 ///
@@ -53,3 +75,18 @@ pub type GID = u128;
 
 /// Root GID constant (all zeros, depth 0).
 pub const ROOT_GID: GID = 0;
+
+/// Maximum supported tree depth (0-7, 8 levels total).
+pub use layout::MAX_DEPTH;
+
+pub use traits::{HasData, IntoGid, IntoGids, IntoGidWithRegistry, NamespaceTag, Redirect};
+pub use layout::{depth_of, gid_is_descendant_of, is_sibling, parent_of};
+pub use registry::{NamespaceDef, NamespaceEntry, NamespaceRegistry};
+
+/// Compute a full hierarchical GID from path segments.
+///
+/// This is primarily used by the `namespace!` macro. Users typically don't
+/// need to call this directly — use the generated `Tag::GID` constants instead.
+#[doc(hidden)]
+pub use hash::hierarchical_gid;
+

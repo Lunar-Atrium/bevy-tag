@@ -44,7 +44,7 @@ mod toml_parser;
 
 pub use codegen::{generate_namespace_code, generate_namespace_code_from_lock};
 pub use lock::{LockFile, LockFileError};
-pub use toml_parser::{OnRemove, TagsConfig, TagsConfigError};
+pub use toml_parser::{OnRemove, RedirectEntry, TagsConfig, TagsConfigError};
 
 use std::path::Path;
 

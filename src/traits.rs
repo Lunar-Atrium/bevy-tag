@@ -8,77 +8,73 @@ use core::marker::PhantomData;
 use crate::registry::NamespaceRegistry;
 use crate::GID;
 
-// =============================================================================
-// Alias<T> — zero-cost wrapper for deprecated/aliased tags
-// =============================================================================
-
-/// A zero-cost wrapper indicating this tag is an alias of another tag.
+/// A zero-cost wrapper indicating this tag path was redirected to another tag.
 ///
-/// When a tag is renamed or moved, the old path can be kept as an alias
-/// pointing to the new tag. The `Alias<T>` type makes this relationship
-/// explicit in the type system.
+/// Similar to UE5's Core Redirects, when a tag is renamed or moved, the old
+/// path is preserved as a `Redirect<T>` pointing to the canonical tag `T`.
+/// This makes the redirection explicit in the type system.
+///
+/// **Key behavior:**
+/// - `Redirect<T>::GID` returns `T::GID` (same GID as canonical tag)
+/// - `Redirect<T>::PATH` returns `T::PATH` (canonical path, not the old path)
+/// - The type itself signals to developers that this path was redirected
 ///
 /// ```rust,ignore
-/// namespace! {
-///     pub mod Tags {
-///         // New canonical path
-///         Equipment {
-///             Blade;
-///         }
-///         // Old path kept as alias
-///         #[alias_of = "Equipment.Blade"]
-///         Item {
-///             Weapon {
-///                 Sword;  // This becomes Alias<Equipment::Blade::Tag>
-///             }
-///         }
+/// // In generated code from build.rs when a path is renamed:
+/// pub mod item {
+///     pub mod weapon {
+///         // Old path "Item.Weapon.Sword" now redirects to "Equipment.Blade"
+///         pub type Sword = bevy_tag::Redirect<crate::equipment::Blade>;
 ///     }
 /// }
 ///
-/// // Both have the same GID:
-/// assert_eq!(
-///     Tags::Item::Weapon::Sword::Tag::STABLE_GID,
-///     Tags::Equipment::Blade::Tag::STABLE_GID
-/// );
+/// // Usage shows the redirect relationship in the type:
+/// let tag: item::weapon::Sword = Redirect::new();
+/// assert_eq!(tag.gid(), equipment::Blade::GID);  // Same GID
 /// ```
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Alias<T: NamespaceTag>(PhantomData<T>);
+pub struct Redirect<T: NamespaceTag>(PhantomData<T>);
 
-impl<T: NamespaceTag> Alias<T> {
-    /// Create a new alias instance.
+impl<T: NamespaceTag> Redirect<T> {
+    /// Create a new redirect instance.
     #[inline]
     pub const fn new() -> Self {
         Self(PhantomData)
     }
+
+    /// Get the canonical tag type this redirects to.
+    pub const fn canonical_path() -> &'static str {
+        T::PATH
+    }
 }
 
-impl<T: NamespaceTag> Default for Alias<T> {
+impl<T: NamespaceTag> Default for Redirect<T> {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: NamespaceTag> core::fmt::Debug for Alias<T> {
+impl<T: NamespaceTag> core::fmt::Debug for Redirect<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Alias<{}>", T::PATH)
+        write!(f, "Redirect<{}>", T::PATH)
     }
 }
 
-impl<T: NamespaceTag> NamespaceTag for Alias<T> {
-    /// The path of the ALIAS (not the target).
-    /// This is set by the macro when generating the alias.
+impl<T: NamespaceTag> NamespaceTag for Redirect<T> {
+    /// Returns the CANONICAL path (T::PATH), not the old redirected path.
+    /// This ensures `path_of()` always returns the canonical location.
     const PATH: &'static str = T::PATH;
 
-    /// Depth matches the target.
+    /// Depth matches the canonical tag.
     const DEPTH: u8 = T::DEPTH;
 
-    /// GID matches the target — this is the key invariant.
-    const STABLE_GID: GID = T::STABLE_GID;
+    /// GID matches the canonical tag — the core redirect invariant.
+    const GID: GID = T::GID;
 }
 
-impl<T: NamespaceTag + HasData> HasData for Alias<T> {
+impl<T: NamespaceTag + HasData> HasData for Redirect<T> {
     type Data = T::Data;
 }
 
@@ -95,10 +91,10 @@ impl<T: NamespaceTag + HasData> HasData for Alias<T> {
 /// }
 ///
 /// // Generated:
-/// // ids::Movement::Idle::Tag implements NamespaceTag
-/// // ids::Movement::Idle::Tag::PATH  = "Movement.Idle"
-/// // ids::Movement::Idle::Tag::DEPTH = 1
-/// // ids::Movement::Idle::Tag::GID   = 0x... (const hierarchical hash)
+/// // ids::Movement::Idle implements NamespaceTag
+/// // ids::Movement::Idle::PATH  = "Movement.Idle"
+/// // ids::Movement::Idle::DEPTH = 1
+/// // ids::Movement::Idle::GID   = 0x... (const hierarchical hash)
 /// ```
 pub trait NamespaceTag: Copy + 'static {
     /// Full dot-separated path, e.g. `"Movement.Idle"`.
@@ -110,19 +106,14 @@ pub trait NamespaceTag: Copy + 'static {
     /// Stable hierarchical GID, computed at compile time.
     ///
     /// This is a `const` value — no registry lookup needed.
-    const STABLE_GID: GID;
+    const GID: GID;
 
-    /// Get the GID. This is just `Self::STABLE_GID` but useful
-    /// when you have a value (not just the type).
+    /// Get the GID as a value (convenience method).
     #[inline]
     fn gid() -> GID {
-        Self::STABLE_GID
+        Self::GID
     }
 }
-
-// =============================================================================
-// IntoGid — uniform conversion to GID
-// =============================================================================
 
 /// Convert to GID. Implemented for raw `GID` (passthrough) and all `NamespaceTag` types.
 pub trait IntoGid: Copy {
@@ -139,13 +130,9 @@ impl IntoGid for GID {
 impl<T: NamespaceTag> IntoGid for T {
     #[inline]
     fn into_gid(self) -> GID {
-        T::STABLE_GID
+        T::GID
     }
 }
-
-// =============================================================================
-// IntoGidWithRegistry — for contexts with a local (non-global) registry
-// =============================================================================
 
 /// Convert to GID using a specific registry instance.
 ///
@@ -165,13 +152,9 @@ impl<T: NamespaceTag> IntoGidWithRegistry for T {
     #[inline]
     fn into_gid_with(self, _registry: &NamespaceRegistry) -> GID {
         // Tag already knows its GID at compile time
-        T::STABLE_GID
+        T::GID
     }
 }
-
-// =============================================================================
-// IntoGids — batch conversion
-// =============================================================================
 
 /// Convert a collection of items into a `Vec<GID>`.
 pub trait IntoGids {
@@ -216,10 +199,6 @@ impl<T: IntoGid, const N: usize> IntoGids for [T; N] {
         self.into_iter().map(IntoGid::into_gid).collect()
     }
 }
-
-// =============================================================================
-// HasData — marker trait for tags with associated data types
-// =============================================================================
 
 /// Marker trait for namespace tags that have associated serializable data.
 ///

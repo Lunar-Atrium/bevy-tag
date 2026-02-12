@@ -1,26 +1,10 @@
-//! Level layout — fixed bit allocation for 8-level hierarchy with embedded depth.
-//!
-//! The GID is self-contained: depth is encoded in the top 3 bits,
-//! enabling O(1) subtree checks without external registry lookup.
-//!
-//! ## GID Layout (u128)
-//!
-//! ```text
-//! ┌─────────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐
-//! │ Depth   │ Level 0  │ Level 1  │ Level 2  │ Level 3  │ Level 4  │ Level 5  │ Level 6  │ Level 7  │
-//! │ 3 bits  │ 21 bits  │ 18 bits  │ 16 bits  │ 16 bits  │ 14 bits  │ 14 bits  │ 13 bits  │ 13 bits  │
-//! │[127:125]│[124:104] │ [103:86] │ [85:70]  │ [69:54]  │ [53:40]  │ [39:26]  │ [25:13]  │ [12:0]   │
-//! └─────────┴──────────┴──────────┴──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘
-//! ```
-//!
-//! Total: 3 + 21 + 18 + 16 + 16 + 14 + 14 + 13 + 13 = 128 bits
-
 use crate::GID;
 
 /// Maximum supported tree depth (0-7, encoded in 3 bits).
 pub const MAX_DEPTH: usize = 8;
 
-/// Bits reserved for depth encoding.
+/// Bits reserved for depth encoding (documentation constant).
+#[allow(dead_code)]
 pub const DEPTH_BITS: u8 = 3;
 
 /// Bit position where depth is stored (bits 127:125).
@@ -114,12 +98,10 @@ const _: () = {
 };
 
 // =============================================================================
-// Standalone GID operations (no registry needed)
+// Standalone GID operations
 // =============================================================================
 
 /// Extract the depth (0-7) from a GID.
-///
-/// This is a pure bit operation - no external lookup required.
 #[inline]
 pub const fn depth_of(gid: GID) -> u8 {
     ((gid >> DEPTH_SHIFT) & 0b111) as u8
@@ -148,7 +130,7 @@ pub const fn encode_gid(payload: u128, depth: u8) -> GID {
 /// is_descendant_of(Combat.Attack.GID, Movement.GID) → false
 /// ```
 #[inline]
-pub const fn gid_is_descendant_of(candidate: GID, ancestor: GID) -> bool {
+pub fn gid_is_descendant_of(candidate: GID, ancestor: GID) -> bool {
     let ancestor_depth = depth_of(ancestor) as usize;
     if ancestor_depth >= MAX_DEPTH {
         return false;

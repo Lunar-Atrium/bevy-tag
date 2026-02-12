@@ -3,10 +3,10 @@
 //! This example shows how to:
 //! - Check if a tag is a descendant of another tag
 //! - Understand how hierarchical GIDs enable O(1) checks
-//! - Use `is_descendant_of` for game logic (e.g., damage type filtering)
+//! - Use `gid_is_descendant_of` for game logic (e.g., damage type filtering)
 //! - Use tuples with `IntoGids` for ergonomic GID collection
 
-use bevy_tag::{GID, IntoGid, IntoGids, NamespaceRegistry};
+use bevy_tag::{gid_is_descendant_of, GID, IntoGid, IntoGids, NamespaceRegistry};
 use bevy_tag_macro::namespace;
 
 namespace! {
@@ -35,10 +35,10 @@ struct Entity {
 fn main() {
     let registry = NamespaceRegistry::build(DamageTags::DEFINITIONS).unwrap();
 
-    // 1. Basic descendant check (using snake_case module for children)
+    // 1. Basic descendant check - no registry needed!
     println!(
         "  Is Slash a descendant of Physical? {}",
-        registry.is_descendant_of(DamageTags::physical::Slash, DamageTags::Physical)
+        gid_is_descendant_of(DamageTags::physical::Slash::GID, DamageTags::Physical::GID)
     );
     println!();
 
@@ -85,11 +85,11 @@ fn main() {
     for entity in &entities {
         println!("{}:", entity.name);
         for (name, damage_gid) in &damage_types {
-            // is_descendant_of accepts both GID and Tag!
+            // gid_is_descendant_of is O(1) and needs no registry!
             let resisted = entity
                 .resistances
                 .iter()
-                .any(|&resistance| registry.is_descendant_of(*damage_gid, resistance));
+                .any(|&resistance| gid_is_descendant_of(*damage_gid, resistance));
             let status = if resisted { "RESISTED" } else { "takes damage" };
             println!("  {} -> {}", name, status);
         }
